@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mindelo Bar 🇨🇻 - Écran Barman</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: #121212; color: #fff; margin: 0; padding: 15px; }
+        .container { max-width: 600px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 12px; }
+        h2 { color: #0088cc; margin-top: 0; }
+        
+        .btn-audio { width: 100%; padding: 15px; background: #e67e22; border: none; color: white; font-size: 1.1em; font-weight: bold; border-radius: 8px; cursor: pointer; margin-bottom: 20px; text-align: center; }
+        .btn-audio.active { background: #27ae60; }
+
+        .order-card { background: #2a2a2a; border-left: 5px solid #f39c12; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .order-card.ready { border-left-color: #27ae60; opacity: 0.5; }
+        .order-header { display: flex; justify-content: space-between; font-weight: bold; font-size: 1.1em; border-bottom: 1px solid #444; padding-bottom: 8px; }
+        .order-items { margin: 10px 0; color: #ddd; }
+        .btn-action { background: #e67e22; border: none; color: white; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .btn-clear { background: #c0392b; border: none; color: white; padding: 10px; border-radius: 5px; cursor: pointer; width: 100%; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🍻 Commandes en cours (Mindelo Bar)</h2>
+    
+    <button id="audioBtn" class="btn-audio" onclick="enableAudio()">🔔 Appuie ICI avant de commencer le service !</button>
+
+    <div id="ordersContainer">Chargement des commandes...</div>
+    <button class="btn-clear" onclick="clearOrders()">Tout effacer</button>
+</div>
+
+<script>
+    const SUPABASE_URL = "https://cibcntzcpkyzepsxcviv.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_SsrI0hNP7yHP_0SE20gZFQ_QCIpoqPS";
+    
+    const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    let audioCtx = null;
+    let knownIds = new Set();
+    let audioReady = false;
+
+    // Le fameux biiiip synthétisé
+    function playBeep() {
+        try {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            const osc = audioCtx.createOscillator();
+            osc.type = "sine";
+            osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+            osc.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.4); // Durée du bip (0.4 seconde)
+        } catch(e) {
+            console.error("Erreur audio :", e);
+        }
+    }
+
+    async function enableAudio() {
+        try {
+            // Initialise et réveille le contexte audio au clic
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+            
+            // Joue le bip de test
+            playBeep();
+            
+            // Marque le son comme prêt
+            audioReady = true;
+
+            // Récupère la liste des commandes actuelles à cet instant précis
+            const { data: orders } = await db.from('orders').select('id');
+            if (orders) {
+                knownIds = new Set(orders.map(o => o.id));
+            }
+
+            const btn = document.getElementById('audioBtn');
+            btn.classList.add('active');
+            btn.innerHTML = "🔊 Bar prêt & Bip actif !";
+        } catch(err) {
+            alert("Erreur activation audio : " + err);
+        }
+    }
+
+    async function fetchOrders() {
+        const { data: orders, error } = await db.from('orders').select('*').order('created_at', { ascending: false });
+
+        if (error) {
+            console.error(error);
+            return;
+        }
+
+        const container = document.getElementById('ordersContainer');
+        if (!orders || orders.length === 0) {
+            container.innerHTML = "<p style='color:#888;'>Aucune commande pour le moment...</p>";
+            knownIds.clear();
+            return;
+        }
+
+        // Si l'audio a été activé, on fait sonner le bip pour les nouvelles commandes
+        if (audioReady) {
+            orders.forEach(o => {
+                if (!knownIds.has(o.id)) {
+                    playBeep();
+                }
+            });
+        }
+
+        // Mise à jour de la mémoire des commandes
+        knownIds = new Set(orders.map(o => o.id));
+
+        container.innerHTML = orders.map(order => `
+            <div class="order-card ${order.status === 'ready' ? 'ready' : ''}">
+                <div class="order-header">
+                    <span>${order.name} (${order.location})</span>
+                    <span>${new Date(order.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                </div>
+                <div class="order-items">
+                    • ${order.items.join('<br>• ')}
+                    ${order.notes ? `<br><i>Note: ${order.notes}</i>` : ''}
+                </div>
+                <button class="btn-action" onclick="toggleStatus(${order.id}, '${order.status}')">
+                    ${order.status === 'pending' ? 'Marquer comme Prêt 🟢' : 'Remettre en attente 🟡'}
+                </button>
+            </div>
+        `).join('');
+    }
+
+    async function toggleStatus(id, currentStatus) {
+        const nextStatus = currentStatus === 'pending' ? 'ready' : 'pending';
+        await db.from('orders').update({ status: nextStatus }).eq('id', id);
+        fetchOrders();
+    }
+
+    async function clearOrders() {
+        if (confirm("Effacer toutes les commandes ?")) {
+            await db.from('orders').delete().gte('id', 0);
+            fetchOrders();
+        }
+    }
+
+    setInterval(fetchOrders, 2000);
+    fetchOrders();
+</script>
+
+</body>
+</html>
